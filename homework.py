@@ -3,14 +3,15 @@ import logging
 import os
 import time
 from http import HTTPStatus
+from logging.handlers import RotatingFileHandler
 from sys import exit, stdout
 
 import requests
 import telegram
 from dotenv import load_dotenv
+from telegram.error import TelegramError
 
-from exceptions import (MyEmptyDictError, MyUnintendedError,
-                        MyUnknownStatusError)
+from exceptions import MyResponseStatusError, MyUnknownStatusError
 
 load_dotenv()
 
@@ -36,11 +37,16 @@ logger.setLevel(logging.INFO)
 handler = logging.StreamHandler(stream=stdout)
 logger.addHandler(handler)
 
+# Дополнительно выводим логи в файл logs.log
+sec_handler = RotatingFileHandler('logs.log', maxBytes=50000000, backupCount=5)
+logger.addHandler(sec_handler)
+
 # Создаем форматер для красивого вывода сообщений в логах.
 formatter = logging.Formatter(
     '%(asctime)s - %(levelname)s - %(message)s - %(name)s'
 )
 handler.setFormatter(formatter)
+sec_handler.setFormatter(formatter)
 
 
 def send_message(bot, message):
@@ -48,10 +54,10 @@ def send_message(bot, message):
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.info('Сообщение успешно отправлено в Telegram!')
-        return True
-    except Exception as error:
-        logger.error(error, exc_info=True)
-        return False
+    except TelegramError:
+        string = 'Сбой при отправке сообщения!'
+        logger.error(string, exc_info=True)
+        raise TelegramError(string)
 
 
 def get_api_answer(current_timestamp):
@@ -67,63 +73,53 @@ def get_api_answer(current_timestamp):
         if response.status_code == HTTPStatus.OK:
             return response.json()
         string = 'Получен статус {}. А нужен 200!'.format(response.status_code)
-        raise requests.exceptions.RequestException(string)
+        raise MyResponseStatusError(string)
     except json.decoder.JSONDecodeError as error:
         string = f'Не переведено в json - {error}'
         logger.error(string, exc_info=True)
         raise json.decoder.JSONDecodeError(string)
-    except requests.exceptions.RequestException as error:
+    except MyResponseStatusError as error:
         string = f'Статус ответа - {response.status_code}: {error}'
         logger.error(string, exc_info=True)
-        raise requests.exceptions.RequestException(string)
-    except MyUnintendedError as error:
-        string = f'Непредусмотренная ошибка в get_api_answer: {error}'
-        logger.error(string, exc_info=True)
-        raise MyUnintendedError(string)
+        raise MyResponseStatusError(string)
 
 
 def check_response(response):
     """Функция для проверки корректности ответа API.
     В случае положительного ответа возвращает список домашних работ.
     """
-    if type(response) != dict:
+    if not isinstance(response, dict):
         string = 'В response пришёл не словарь!'
         logger.error(string, exc_info=True)
         raise TypeError(string)
-    if ('homeworks' and 'current_date') not in response.keys():
-        string = 'В словаре нет одного из ключей!'
+    if 'homeworks' not in response.keys():
+        string = 'В словаре нет ключа "homeworks"!'
         logger.error(string, exc_info=True)
         raise KeyError(string)
-    if type(response['homeworks']) != list:
+    if 'current_date' not in response.keys():
+        string = 'В словаре нет ключа "current_date"!'
+        logger.error(string, exc_info=True)
+        raise KeyError(string)
+    if not isinstance(response.get('homeworks'), list):
         string = 'Отсутствует список домашних работ!'
         logger.error(string, exc_info=True)
         raise TypeError(string)
-    if not response:
-        string = 'В ответе пришёл пустой словарь!'
-        logger.error(string, exc_info=True)
-        raise MyEmptyDictError(string)
-    try:
-        homeworks_list = response['homeworks']
-        return homeworks_list
-    except MyUnintendedError as error:
-        string = f'Непредусмотренная ошибка в check_response: {error}'
-        logger.error(string, exc_info=True)
-        raise MyUnintendedError(string)
+    homeworks_list = response.get('homeworks')
+    return homeworks_list
 
 
 def parse_status(homework):
     """Функция для извлечения статуса домашней работы."""
-    if ('homework_name' and 'status') not in homework.keys():
-        string = 'В homework отсутствует один из нужных ключей.'
+    if 'homework_name' not in homework.keys():
+        string = 'В homework отсутствует ключ "homework_name".'
         logger.error(string, exc_info=True)
         raise KeyError(string)
-    try:
-        homework_name = homework['homework_name']
-        homework_status = homework['status']
-    except MyUnintendedError as error:
-        string = f'Непредусмотренная ошибка в parse_status: {error}'
+    if 'status' not in homework.keys():
+        string = 'В homework отсутствует ключ "status".'
         logger.error(string, exc_info=True)
-        raise MyUnintendedError(string)
+        raise KeyError(string)
+    homework_name = homework['homework_name']
+    homework_status = homework['status']
 
     if homework_status not in HOMEWORK_STATUSES:
         string = 'Неизвестный статус домашней работы!'
@@ -136,24 +132,32 @@ def parse_status(homework):
 
 def check_tokens():
     """Функция для проверки наличия переменных окружения."""
-    if PRACTICUM_TOKEN and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+    tokens = {
+        'PRACTICUM_TOKEN': PRACTICUM_TOKEN,
+        'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
+        'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID
+    }
+
+    for token in tokens:
+        if tokens[token] is None:
+            logger.critical(f'Отсутствует переменная окружения: {token}')
+            return False
         return True
-    return False
 
 
 def main():
     """Основная логика работы бота."""
     # Проверяем, все ли переменные окружения нам доступны.
     # Если нет - принудительно завершаем программу.
-    if check_tokens() is False:
-        logger.critical('Отсутствует обязательная переменная окружения!')
+    if not check_tokens():
         exit(1)
 
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     current_timestamp = int(time.time())
 
     # Переменная, которая не даст отправить повторное сообщение.
-    sent_message = ''
+    sent_message = None
+    sent_error_message = None
 
     while True:
         try:
@@ -165,7 +169,9 @@ def main():
 
             # Проверяем наличие новых домашек в списке.
             if len(check) == 0:
-                logger.debug('Нет свежих домашних работ.')
+                string = 'Нет свежих домашних работ.'
+                logger.debug(string)
+                raise IndexError(string)
 
             # Получаем нужную работу из списка домашек.
             homework = check[0]
@@ -175,22 +181,19 @@ def main():
 
             # Передаем боту текст сообщения и отправляем письмо.
             if message != sent_message:
-                check_send = send_message(bot, message)
-                if check_send:
-                    sent_message = message
+                send_message(bot, message)
+                sent_message = message
 
             # Записываем в переменную время последнего запроса.
-            current_timestamp = response['current_date']
+            current_timestamp = response.get('current_date', current_timestamp)
+            time.sleep(RETRY_TIME)
 
         except Exception as error:
-            message = f'Сбой в работе программы: {error}'
-            logger.error(message, exc_info=True)
-            if message != sent_message:
-                check_send = send_message(bot, message)
-                if check_send:
-                    sent_message = message
-
-        finally:
+            error_message = f'Сбой в работе программы: {error}'
+            logger.error(error_message, exc_info=True)
+            if error_message != sent_error_message:
+                send_message(bot, error_message)
+                sent_error_message = error_message
             time.sleep(RETRY_TIME)
 
 

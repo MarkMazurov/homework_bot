@@ -1,5 +1,5 @@
-class MyUnintendedError(Exception):
-    """Непредусмотренная ошибка."""
+class MyResponseStatusError(Exception):
+    """Кастомное исключение при обращении к эндпоинту."""
 
     def __init__(self, *args):
         if args:
@@ -10,26 +10,9 @@ class MyUnintendedError(Exception):
     def __str__(self):
         print('calling str')
         if self.message:
-            return 'MyUnintendedError, {0} '.format(self.message)
+            return 'MyResponseStatusError, {0} '.format(self.message)
         else:
-            return 'MyUnintendedError has been raised'
-
-
-class MyEmptyDictError(Exception):
-    """Ошибка, когда в ответе от API пришёл пустой словарь."""
-
-    def __init__(self, *args):
-        if args:
-            self.message = args[0]
-        else:
-            self.message = None
-
-    def __str__(self):
-        print('calling str')
-        if self.message:
-            return 'MyEmptyDictError, {0} '.format(self.message)
-        else:
-            return 'MyEmptyDictError has been raised'
+            return 'MyResponseStatusError has been raised'
 
 
 class MyUnknownStatusError(Exception):
