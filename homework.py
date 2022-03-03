@@ -38,7 +38,11 @@ handler = logging.StreamHandler(stream=stdout)
 logger.addHandler(handler)
 
 # Дополнительно выводим логи в файл logs.log
-sec_handler = RotatingFileHandler('logs.log', maxBytes=50000000, backupCount=5)
+sec_handler = RotatingFileHandler(
+    'logs.log',
+    maxBytes=50_000_000,
+    backupCount=5
+)
 logger.addHandler(sec_handler)
 
 # Создаем форматер для красивого вывода сообщений в логах.
@@ -72,16 +76,17 @@ def get_api_answer(current_timestamp):
         )
         if response.status_code == HTTPStatus.OK:
             return response.json()
-        string = 'Получен статус {}. А нужен 200!'.format(response.status_code)
+        string = f'Получен статус {response.status_code}. А нужен 200!'
+        logger.error(string, exc_info=True)
         raise MyResponseStatusError(string)
     except json.decoder.JSONDecodeError as error:
         string = f'Не переведено в json - {error}'
         logger.error(string, exc_info=True)
         raise json.decoder.JSONDecodeError(string)
-    except MyResponseStatusError as error:
-        string = f'Статус ответа - {response.status_code}: {error}'
+    except requests.RequestException as error:
+        string = f'Ошибка при выполнении GET-запроса: {error}'
         logger.error(string, exc_info=True)
-        raise MyResponseStatusError(string)
+        raise requests.RequestException(string)
 
 
 def check_response(response):
@@ -92,29 +97,29 @@ def check_response(response):
         string = 'В response пришёл не словарь!'
         logger.error(string, exc_info=True)
         raise TypeError(string)
-    if 'homeworks' not in response.keys():
+    if 'homeworks' not in response:
         string = 'В словаре нет ключа "homeworks"!'
         logger.error(string, exc_info=True)
         raise KeyError(string)
-    if 'current_date' not in response.keys():
+    if 'current_date' not in response:
         string = 'В словаре нет ключа "current_date"!'
         logger.error(string, exc_info=True)
         raise KeyError(string)
-    if not isinstance(response.get('homeworks'), list):
+    if not isinstance(response['homeworks'], list):
         string = 'Отсутствует список домашних работ!'
         logger.error(string, exc_info=True)
         raise TypeError(string)
-    homeworks_list = response.get('homeworks')
+    homeworks_list = response['homeworks']
     return homeworks_list
 
 
 def parse_status(homework):
     """Функция для извлечения статуса домашней работы."""
-    if 'homework_name' not in homework.keys():
+    if 'homework_name' not in homework:
         string = 'В homework отсутствует ключ "homework_name".'
         logger.error(string, exc_info=True)
         raise KeyError(string)
-    if 'status' not in homework.keys():
+    if 'status' not in homework:
         string = 'В homework отсутствует ключ "status".'
         logger.error(string, exc_info=True)
         raise KeyError(string)
@@ -137,12 +142,16 @@ def check_tokens():
         'TELEGRAM_TOKEN': TELEGRAM_TOKEN,
         'TELEGRAM_CHAT_ID': TELEGRAM_CHAT_ID
     }
+    correct_tokens = []
 
-    for token in tokens:
-        if tokens[token] is None:
-            logger.critical(f'Отсутствует переменная окружения: {token}')
-            return False
+    for key, token in tokens.items():
+        if token is None:
+            logger.critical(f'Отсутствует переменная окружения: {key}')
+        if token:
+            correct_tokens.append(token)
+    if len(correct_tokens) == 3:
         return True
+    return False
 
 
 def main():
@@ -186,7 +195,6 @@ def main():
 
             # Записываем в переменную время последнего запроса.
             current_timestamp = response.get('current_date', current_timestamp)
-            time.sleep(RETRY_TIME)
 
         except Exception as error:
             error_message = f'Сбой в работе программы: {error}'
@@ -194,7 +202,8 @@ def main():
             if error_message != sent_error_message:
                 send_message(bot, error_message)
                 sent_error_message = error_message
-            time.sleep(RETRY_TIME)
+
+        time.sleep(RETRY_TIME)
 
 
 if __name__ == '__main__':
